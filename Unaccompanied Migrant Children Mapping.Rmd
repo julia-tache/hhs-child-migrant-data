@@ -1,0 +1,399 @@
+---
+title: "Unaccompanied Migrant Children Mapping"
+output: html_document
+date: "2024-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+
+library(zipcodeR)
+library(tidyverse)
+library(maps)
+library(viridis)
+library(ggthemes)
+library(albersusa)
+
+```
+
+```{r load and clean data}
+
+migrants <- read_csv("data.csv")
+
+migrants$year <- paste0("20", substr(migrants$`Child's Date of Entry`, nchar(migrants$`Child's Date of Entry`) - 2 + 1, nchar(migrants$`Child's Date of Entry`)))
+
+migrants <- migrants %>%
+  group_by(year) %>%
+  mutate(count = n()) %>%
+  filter(year != "2015") %>%
+  filter(year != "2016") %>%
+  filter(year != "2017")
+
+migrants$count <- paste0(gsub('.{3}$', '', migrants$count), " thousand minors")
+
+migrants$year_count <- paste0(migrants$year, ": ", migrants$count)
+
+migrants$year_count <- sub("2023: 35 thousand minors", paste0("2023: 35 thousand minors", "*"), migrants$year_count, fixed=TRUE)
+
+# get rid of invalid zipcode data for mapping
+migrants_clean <- migrants %>%
+  filter(`Sponsor Zipcode` != "-") %>%
+  filter(`Sponsor Zipcode` != "--") %>%
+  filter(`Sponsor Zipcode` != "0000") %>%
+  filter(`Sponsor Zipcode` != "00000")
+
+migrants_clean <- migrants_clean %>%
+  rename("zipcode" = "Sponsor Zipcode")
+
+```
+
+
+```{r join with county and state data}
+
+zip_geocoded_full <- as.data.frame(reverse_zipcode(migrants_clean$zipcode)) 
+
+zip_geocoded <- zip_geocoded_full %>%
+  select(zipcode, county, state, lat, lng)
+
+migrants_joined <- left_join(migrants_clean, zip_geocoded, by = "zipcode")
+
+```
+
+```{r create zipcode mapping dataset}
+
+migrants_joined <- migrants_joined %>%
+  group_by(zipcode, year_count, lat, lng) %>%
+  tally() 
+
+```
+
+
+```{r zipcode map}
+
+us <- map_data("state")
+
+ggplot(migrants_joined, aes(lng, lat)) +
+  geom_polygon(data = us, aes(x = long, y = lat, group = group), color = "#6D6875", fill = "white", alpha = .35)+
+  geom_point(size = 0.33333, alpha = 0.1, color = "#B5838D") +
+  xlim(-125, -65) + ylim(20, 50) +
+  facet_wrap(~year_count) +
+  ggtitle("Geographic Trends of Unaccompanied Minors Entering the U.S.\n(by date of entry)") +
+  labs(subtitle = "Children and teens arriving in the United States are often escaping instability, threats of violence, and\neconomic insecurity, especially following the COVID-19 pandemic, in their home countries. The minors\nrepresented in this dataset were connected with sponsors through HHS' Office of Refugee Resettlement.\nIn 2023, the office and HHS leadership faced scrutiny over losing contact with 85,000 minors\nreleased to sponsors over a two-year period.\n",
+       caption = "*Please note that 2023 only includes data for 6 months (Jan-May).") +
+  theme_void() +
+  theme(text = element_text(family = "Times New Roman"),
+        plot.background = element_rect(color = "white", fill = "white"),
+        panel.background = element_rect(color = "white", fill = "white"),
+        plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+        plot.subtitle = element_text(face = "italic", size = 12, hjust = 0.5),
+        strip.text = element_text(face = "bold"))
+
+ggsave("map.png", width = 8, height = 5.5)
+
+```
+
+```{r U.S. cities}
+
+migrants_cities <- left_join(migrants_clean, zip_geocoded_full, by = "zipcode") %>%
+  select(year, major_city)
+
+migrants_cities <- migrants_cities %>%
+  group_by(major_city) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_cities$label <- paste0(prettyNum(migrants_cities$n, big.mark = ",", scientific = FALSE), " minors")
+
+migrant_cities_top_10 <- migrants_cities[1:10, ]
+
+migrant_cities_top_10 %>%
+  ggplot(aes(x = reorder(major_city, n), y = n)) +
+  geom_col(fill = "#B5838D") +
+  geom_label(aes(label = label), hjust = 1.025, size = 3.5, color = "#6D6875", family = "Times New Roman", fontface = "bold") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0)) +
+  ggtitle("U.S. Cities with the Largest Share of Unaccompanied Minors\n(2018 - mid-2023)") +
+  theme(text = element_text(family = "Times New Roman"),
+        plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle = element_text(face = "italic"),
+        panel.background = element_rect(color = "white", fill = "white"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.ticks = element_blank(),)
+
+ggsave("cities.png", width = 8, height = 5.5)
+
+```
+
+
+```{r days in custody}
+
+migrants$days_in_custody <- as.Date(migrants$`Child's Date of Release`, "%m/%d/%Y") - as.Date(migrants$`Child's Date of Entry`, "%m/%d/%Y")
+
+migrants_custody <- migrants %>%
+  group_by(year) %>%
+  summarize(avg_days_in_custody = mean(days_in_custody))
+
+migrants_custody$avg_days_in_custody <- round(as.numeric(migrants_custody$avg_days_in_custody), 0)
+
+migrants_custody$label <- paste0(migrants_custody$avg_days_in_custody, " Days")
+
+ggplot(migrants_custody, aes(x = year, y = avg_days_in_custody)) +
+  geom_col(fill = "#B5838D") +
+  geom_label(aes(label = label), vjust = 1.5, color = "#6D6875", size = 4, family = "Times New Roman", fontface = "bold") +
+  scale_y_continuous(expand = c(0, 0)) +
+  ggtitle("The Average Amount of Time Spent by Migrant Children and\nTeens in ORR's Custody Reduced by Nearly 75% in 6 Years.") +
+    theme(text = element_text(family = "Times New Roman"),
+        plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle = element_text(face = "italic"),
+        panel.background = element_rect(color = "white", fill = "white"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 12, face = "bold"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank())
+
+ggsave("time.png", width = 8, height = 5.5)
+
+```
+
+
+```{r country of origin}
+
+migrants_country_2018 <- migrants %>%
+  filter(year == "2018") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country_2019 <- migrants %>%
+  filter(year == "2019") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country_2020 <- migrants %>%
+  filter(year == "2020") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country_2021 <- migrants %>%
+  filter(year == "2021") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country_2022 <- migrants %>%
+  filter(year == "2022") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country_2023 <- migrants %>%
+  filter(year == "2023") %>%
+  group_by(year, `Child's Country of Origin`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_country <- rbind(migrants_country_2018[1:5, ], migrants_country_2019[1:5, ], migrants_country_2020[1:5, ], migrants_country_2021[1:5, ], migrants_country_2022[1:5, ], migrants_country_2023[1:5, ])
+
+migrants_country$n <- migrants_country$n / 100
+
+ggplot(migrants_country) +
+  geom_col(aes(x = reorder(`Child's Country of Origin`, n), y = n), fill = "#B5838D") +
+  facet_wrap(~year, scales = "free") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0, 0)) +
+  ggtitle("Most unaccompanied minors arrived from\nGuatemala, Honduras, and El Salvador.") +
+  labs(subtitle = "In 2020, two massive hurricanes in the Central American region contributed to increases in migration\nfrom Nicaragua. In 2022, the Biden Administration expanded a private parole program targeting\nVenezuelan immigrants to include migrants from other countries, including Nicaragua\n", caption = "\nNumbers of unaccompanied minors in thousands.") +
+  theme(text = element_text(family = "Times New Roman"),
+        plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle = element_text(face = "italic", size = 12, hjust = 0.5),
+        panel.background = element_rect(color = "white", fill = "white"),
+        strip.background = element_rect(color = "#6D6875", fill = "white"),
+        strip.text = element_text(size = 10, color = "#6D6875", face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 8, color = "#6D6875", face = "bold"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10, color = "#6D6875"),
+        axis.ticks = element_blank())
+
+ggsave("country_of_origin.png", width = 8, height = 5.5)
+
+```
+
+
+```{r sponsor type}
+
+migrants_sponsor_2018 <- migrants %>%
+  filter(year == "2018") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor_2019 <- migrants %>%
+  filter(year == "2021") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor_2020 <- migrants %>%
+  filter(year == "2020") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor_2021 <- migrants %>%
+  filter(year == "2021") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor_2022 <- migrants %>%
+  filter(year == "2022") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor_2023 <- migrants %>%
+  filter(year == "2023") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  mutate(percentage = n/sum(n)) %>% 
+  select(-n) %>% 
+  spread(`Relationship of Sponsor`, percentage) %>%
+  select("Unrelated Sponsor")
+
+migrants_sponsor <- rbind(migrants_sponsor_2018, migrants_sponsor_2019, migrants_sponsor_2020, migrants_sponsor_2021, migrants_sponsor_2022, migrants_sponsor_2023)
+migrants_sponsor$label <- paste0(round(migrants_sponsor$`Unrelated Sponsor`*100, 1), "%")
+
+ggplot(migrants_sponsor, aes(x = year, y = `Unrelated Sponsor`)) +
+  geom_line(group = 1, color = "#6D6875") + 
+  geom_label(aes(label = label), fill = "#B5838D", fontface = "bold", size = 5) +
+  ggtitle("The Percent of Unaccompanied Minors Sponsored by Nonrelatives Doubled\nfrom 2018 to 2022.") +
+  labs(caption = "\nSource: U.S. Department of Health and Human Services | github: julia-tache") +
+  theme(text = element_text(family = "Times New Roman"),
+        plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle = element_text(face = "italic", size = 12),
+        panel.background = element_rect(color = "white", fill = "white"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 14, color = "#6D6875", face = "bold"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank())
+
+ggsave("sponsor.png", width = 8, height = 5.5)
+
+```
+
+
+```{r sponsor type [DRAFT]}
+migrants_sponsor_2018 <- migrants_clean %>%
+  filter(year == "2018") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor_2019 <- migrants_clean %>%
+  filter(year == "2019") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor_2020 <- migrants_clean %>%
+  filter(year == "2020") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor_2021 <- migrants_clean %>%
+  filter(year == "2021") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor_2022 <- migrants_clean %>%
+  filter(year == "2022") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor_2023 <- migrants_clean %>%
+  filter(year == "2023") %>%
+  group_by(year, `Relationship of Sponsor`) %>%
+  tally() %>%
+  arrange(desc(n))
+
+migrants_sponsor <- rbind(migrants_sponsor_2018[1:5, ], migrants_sponsor_2019[1:5, ], migrants_sponsor_2020[1:5, ], migrants_sponsor_2021[1:5, ], migrants_sponsor_2022[1:5, ], migrants_sponsor_2023[1:5, ])
+
+ggplot(migrants_sponsor) +
+  geom_col(aes(x = reorder(`Relationship of Sponsor`, n), y = n)) +
+  facet_grid(~year, scales = "free") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90)) +
+  labs(subtitle = "")
+```
+
+```{r create county mapping dataset [DRAFT]}
+
+migrants_count_county <- clean_mapping_df %>%
+  group_by(zipcode, county, state, lat, lng) %>%
+  tally() %>%
+  rename("count" = "n")
+
+migrants.counties <- aggregate(migrants_count_county$count, by = list(migrants_count_county$county, migrants_count_county$state), sum)
+names(migrants.counties)[1:2] <- c("county", "state")
+
+migrants.counties$county <- str_remove(migrants.counties$county, " Borough")
+migrants.counties$county <- str_remove(migrants.counties$county, " County")
+migrants.counties$county <- str_remove(migrants.counties$county, " city")
+migrants.counties$county <- str_remove(migrants.counties$county, " Municipality")
+migrants.counties$county <- str_remove(migrants.counties$county, " Municipio")
+migrants.counties$county <- str_remove(migrants.counties$county, " Parish")
+
+cty_sf <- counties_sf("aeqd")
+cty_sf$county <- as.character(cty_sf$name)
+cty_sf$state <- as.character(cty_sf$iso_3166_2)
+county_mapping_df <- left_join(cty_sf, migrants.counties, by = c("state", "county"))
+county_mapping_df$x <- log(county_mapping_df$x)
+county_mapping_df$x[!is.finite(county_mapping_df$x)] <- 0
+
+```
+
+```{r county map [DRAFT]}
+
+county_mapping_df %>%
+  ggplot(aes(fill = x, color = x)) + 
+  geom_sf() + 
+  scale_fill_viridis(option = "B", direction = -1) + 
+  scale_color_viridis(option = "B", direction = -1) +
+  theme_map(base_size = 11)
+
+```
+
+
+
+
+
+
